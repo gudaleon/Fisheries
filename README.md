@@ -1,2 +1,2 @@
 # Fisheries
-fisheries project
+fisheries project with INLA package
