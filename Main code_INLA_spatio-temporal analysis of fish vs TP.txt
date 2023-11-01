@@ -1,0 +1,273 @@
+
+#####################################################################
+#Corrected-Depth as fixed effect+TL as random
+#####################################################################
+install.packages("INLA",repos=c(getOption("repos"),INLA="https://inla.r-inla-download.org/R/testing"), dep=TRUE)
+library(rgdal)
+library(sp)
+library(rgdal)
+library(maps)
+library(mapdata)
+library(maptools)
+library(ggplot2)
+library(INLA)
+############################################################################
+
+DSN <- "LE_boundary_noIslands_Smooth1.shp"
+ShapeF.utm <- readOGR(dsn = DSN, layer = "LE_boundary_noIslands_Smooth1")
+plot(ShapeF.utm)
+# That is the contour of La Palma
+LaPalma_df <- fortify(ShapeF.utm)
+LaPalma_df
+head(LaPalma_df)
+
+#adding UTM coordinates to dataset
+library(sp)
+library(rgdal)
+#Function to convert coordinates from lat/lon to UTM
+LongLatToUTM<-function(x,y,zone){
+  xy <- data.frame(ID = 1:length(x), X = x, Y = y)
+  coordinates(xy) <- c("X", "Y")
+  proj4string(xy) <- CRS("+proj=longlat +datum=WGS84")  ## for example
+  res <- spTransform(xy, CRS(paste("+proj=utm +zone=",zone," ellps=WGS84",sep='')))
+  return(as.data.frame(res))
+}
+
+#adding UTM coordinates to main fish dataset in km
+x<-LaPalma_df$long
+y<-LaPalma_df$lat
+coordUTM<-LongLatToUTM(x,y,17) #17 is UTM zone
+temp<-cbind(coordUTM$X/1000,coordUTM$Y/1000)
+#temp$X_UTM<-coordUTM$X/1000
+#temp$Y_UTM<-coordUTM$Y/1000
+LaPalma_df$Xkm <- temp[,1]
+LaPalma_df$Ykm <- temp[,2]
+
+# Extract the UTM coordinates
+CoastLine <- LaPalma_df[,c("Xkm", "Ykm")]
+library(lattice)
+# We can plot these:
+xyplot(Ykm ~ Xkm,
+       data = CoastLine,
+       type = "p",
+       aspect = "iso",
+       xlab = list("Xkm", cex = 1.5),
+       ylab = list("Ykm", cex = 1.5),
+       col = 1,
+       pch = 16)
+
+library(INLA)
+#this is preparation of lake boundary 
+pl1 <- Polygon(CoastLine, hole=FALSE) #hole is FALSE
+
+
+#Preparation of islands /simplified
+
+data1<-read.csv("fish_data_set1.csv")
+data_clip<-data1
+rm(x)
+rm(y)
+x<-data_clip$Longitude
+y<-data_clip$Latitude
+
+rm(coordUTM)
+coordUTM<-LongLatToUTM(x,y,17) #17 is UTM zone
+data_clip$X_UTM<-coordUTM$X/1000
+data_clip$Y_UTM<-coordUTM$Y/1000
+
+
+min(data_clip$year)
+max(data_clip$year)
+data_clip$YEAR_1<-data_clip$year-min(data_clip$year)+1
+data_clip <- data_clip[order(data_clip$YEAR_1), ]
+
+#adding depth 
+# Rounded depth to 5m 
+data_clip$depth.group = round(data_clip$depth/5)*5
+
+rm(Loc)
+Loc <- cbind(data_clip$X_UTM, data_clip$Y_UTM)
+
+library(INLA)
+
+#ConvHull <- inla.nonconvex.hull(Loc)
+#mesh <- inla.mesh.2d(boundary = ConvHull,
+#                     max.edge = c(30),
+#                     cutoff   = 1)
+mesh$n
+
+par(mfrow=c(1,1), mar=c(0,0,2,0))
+plot(mesh)
+points(Loc, col = 1, pch = 16, cex = 1.5)
+
+min(data_clip$YEAR_1)
+max(data_clip$YEAR_1)
+
+Knots <- seq(from = 1, to = 25, by = 4)
+Knots
+
+length(Knots)
+NGroups <- length(Knots)
+
+#Plot intervals
+Intervals <- findInterval(data1$YEAR_1,
+                          c(0, Knots, 25))
+Intervals
+
+par(mar = c(5,2,2,2), cex.lab = 1.5)
+plot(0,0, type = "n",
+     ylim = c(0,0.5),
+     xlim = c(0,25),
+     axes = FALSE,
+     xlab = "Year",
+     ylab = "")
+for (i in 1:length(Knots)) {
+  segments(Knots[i],0,Knots[i], 0.1, lty = 2)
+}
+axis(1)
+text(data_clip$YEAR_1, rep(0, nrow(data1)), "|", cex = 1.5)
+
+rm(mesh1d)
+mesh1d <- inla.mesh.1d(loc = Knots) #create interpolated 1D mesh for time with missing years
+
+mesh$n
+par(mfrow=c(1,1), mar=c(0,0,2,0))
+plot(mesh)
+points(Loc, col = 1, pch = 16, cex = 1.5)
+
+
+spde <- inla.spde2.matern(mesh, alpha = 2)
+A3 <- inla.spde.make.A(mesh,
+                       group = data_clip$YEAR_1,
+                       loc = Loc,
+                       group.mesh =mesh1d)
+
+w3.index <- inla.spde.make.index(name = 'w',
+                                 n.spde = mesh$n,
+                                 n.group = NGroups)
+
+N <- nrow(data_clip)
+N
+
+
+#X <- data.frame(Intercept = rep(1,N),
+#                TP= data_clip$logTP_stp_)
+
+
+
+#adding interaction term between TP and Trophic Class
+
+#data_clip$TPxTroph_cl<-data_clip$logCPUE*data_clip$Trophic_cl #<-typo here
+data_clip$TPxTroph_cl<-data_clip$logTP_stp_*data_clip$Trophic_cl
+
+X <- data.frame(Intercept = rep(1,N),
+                TP= data_clip$logTP_stp_,
+                Trophic_cl=data_clip$Trophic_cl,
+                TPxTroph_cl=data_clip$TPxTroph_cl)
+
+
+
+
+
+#option 1a -  depth - fixed value as in Adam's code
+#X <- data.frame(Intercept = rep(1,N),
+#                 TP= data_clip$logTP_stp_,
+#                 Trophic_cl=data_clip$Trophic_cl,
+#                 depth=data_clip$depth)
+
+#option 1b -  depth - fixed value as in Adam's code - without interaction term
+#X <- data.frame(Intercept = rep(1,N),
+#               TP= data_clip$logTP_stp_,
+#               depth=data_clip$depth)
+
+#option 2 - depth is random effect <-results are strange, every 5 meters the effect switches from + to -, which is wrong
+# X <- data.frame(Intercept = rep(1,N),
+#                 TP= data_clip$logTP_stp_,
+#                 Trophic_cl=data_clip$Trophic_cl,
+#                 depth.group=data_clip$depth.group)
+
+
+Stk3 <- inla.stack(
+  tag = "Fit",
+  data = list(y = data_clip$logCPUE),
+  A = list(A3, 1),
+  effects = list(
+    w3.index,
+    X))
+
+#original without depth
+f3 <- y ~ -1 + Intercept + TP+f(Trophic_cl, model = "iid")+TPxTroph_cl+
+  f(w,
+    model = spde,
+    group = w.group,
+    control.group = list(model='ar1'))
+
+#model with depth as fixed effect with random effect for Trophic class
+#f3 <- y ~ -1 + Intercept + TP+f(Trophic_cl, model = "iid")+depth+
+# f(w,
+#   model = spde,
+#     group = w.group,
+#     control.group = list(model='ar1'))
+
+#model with depth as fixed effect - random effect is removed /no Trophic class
+#f3 <- y ~ -1 + Intercept + TP + depth +
+#  f(w,
+#    model = spde,
+#    group = w.group,
+#    control.group = list(model='ar1'))
+
+#model with depth as fixed effect and depth^2 similar to Adam’s code
+# f3 <- y ~ -1 + Intercept + TP + depth + I(depth^2)+
+#   f(w,
+#     model = spde,
+#     group = w.group,
+#     control.group = list(model='ar1’))
+
+#model with depth as fixed effect
+# f3 <- y ~ -1 + Intercept + TP+f(Trophic_cl, model = "iid")+f(depth.group, model = "iid")+
+#   f(w,
+#     model = spde,
+#     group = w.group,
+#     control.group = list(model='ar1'))
+
+#this part is same
+I3 <- inla(f3,
+           family = "gaussian",
+           data = inla.stack.data(Stk3),
+           control.compute = list(dic = TRUE),
+           control.predictor = list(A = inla.stack.A(Stk3))#,
+           #control.inla = list(h = 0.0000001, strategy='laplace')
+)
+
+summary(I3)
+I3$dic$dic
+#I3$summary.random$depth.group
+I3$summary.random$Trophic_cl
+
+
+
+###################################################################
+# Figure 15.7
+max(w3.index$w.group)
+w.pm  <- I3$summary.random$w$mean
+wproj <- inla.mesh.projector(mesh,
+                             xlim = range(Loc[,1]),
+                             ylim = range(Loc[,2]))
+
+w6 <- list()
+for (i in 1:7){
+  w6[[i]] <- inla.mesh.project(
+    wproj,
+    w.pm[w3.index$w.group==i])
+}
+
+library(lattice)
+require(gridExtra)
+do.call(function(...) grid.arrange(..., nrow=3),
+        lapply(w6,
+               levelplot,
+               xlab='',
+               ylab='',
+               col.regions=topo.colors(16),
+               scale=list(draw=FALSE)))
+############################################################################################
